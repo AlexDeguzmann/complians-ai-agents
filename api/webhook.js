@@ -1,24 +1,37 @@
-// api/webhook.js
-export default function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
+import { uploadToSharePoint } from './_utils';
+import axios from 'axios';
 
+export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method not allowed - POST only' });
+    res.status(405).json({ error: 'Method not allowed' });
     return;
   }
-
-  // Simple webhook response for now
-  res.status(200).json({
-    message: 'Webhook endpoint working',
-    timestamp: new Date().toISOString(),
-    receivedData: req.body,
-    note: 'SharePoint upload functionality will be added with environment variables'
-  });
+  try {
+    const { fileId, applicantName } = req.body;
+    if (!fileId) {
+      return res.status(400).json({ error: 'Missing fileId' });
+    }
+    const hubspotUrl = `https://api.hubapi.com/files/v3/files/${fileId}/signed-url`;
+    const signedUrlResp = await axios.get(hubspotUrl, {
+      headers: { Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}` }
+    });
+    const signedUrl = signedUrlResp.data.url;
+    if (!signedUrl) {
+      return res.status(500).json({ error: 'No valid signed URL from HubSpot' });
+    }
+    const cvFileName = `${(applicantName || 'cv').replace(/[^a-zA-Z0-9-_\.]/g, "_")}.docx`;
+    const fileResp = await axios.get(signedUrl, { responseType: 'arraybuffer' });
+    const fileBuffer = Buffer.from(fileResp.data);
+    const uploadResp = await uploadToSharePoint(fileBuffer, cvFileName);
+    res.json({
+      success: true,
+      id: uploadResp.id,
+      webUrl: uploadResp.webUrl,
+      message: 'Uploaded to SharePoint successfully',
+      fileName: cvFileName,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 }
